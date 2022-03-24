@@ -61,7 +61,7 @@ for p in phases:
             sig_3 = g_o.getsingleresult(g_o.Phases[p], g_o.ResultTypes.Soil.SigmaEffective3, (x,y), True)
             # convert to factored MOhr Coulomb parameters
             sig_3n = -sig_3/UCS
-            degree = 0.8*math.asin((6*a*mb*(s+mb*sig_3n)**(a-1))/(2*(1+a)*(2+a)+6*a*mb*(s+mb*sig_3n)**(a-1)))*180/math.pi
+            degree = math.degrees(0.8*math.tan(math.asin((6*a*mb*(s+mb*sig_3n)**(a-1))/(2*(1+a)*(2+a)+6*a*mb*(s+mb*sig_3n)**(a-1)))))
             cohesion = 0.8*(UCS*((1+2*a)*s+(1-a)*mb*sig_3n)*(s+mb*sig_3n)**(a-1))/((1+a)*(2+a)*(math.sqrt(1+(6*a*mb*(s+mb*sig_3n)**(a-1))/((1+a)*(2+a)))))
             xysig3.append([x,y,sig_3])
             xycohesion.append([x,y,cohesion])
@@ -104,9 +104,9 @@ cbar2_max = 58
 cbar2_step = 4
 # for friction angle
 cbar3_min = 14 
-cbar3_max = 46 
+cbar3_max = 60 
 cbar3_step = 1
-cbar3_step1 = 2
+cbar3_step1 = 4
 
 levels1 = np.arange(cbar1_min, cbar1_max+cbar1_step, cbar1_step)
 levels2 = np.arange(cbar2_min, cbar2_max+cbar2_step, cbar2_step)
