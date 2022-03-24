@@ -1,188 +1,215 @@
 # Created on Wed Mar 15 11:20:52 2022
 # Author: RON93902 @ Mott MacDonald
+import math 
+import numpy as np
+import matplotlib.pyplot as plt
 
 from plxscripting.easy import *
 # your server setting
 server_port = 10001
-server_password = "12345"
+server_password = "mottmac"
 s_o, g_o = new_server('localhost', server_port, password=server_password)
-import easygui
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import pylab
-import math
+
+# import pandas as pd #   not in use
+# import easygui      #   not in use
+# import pylab        #   not in use
 
 # MMG I/II Hoek-Brown parameters
-UCS = 2000 # unit kPa
-mi = 4
-GSI = 45
-D = 0 
+# USC, mi, GSI, D are the primary input parameters
+# mb, s, a are derivative parameters
+# USC or qi in the unit of kPa
+class HoekBrownModel():
+    def __init__(self, ucs=2000, mi=4, gsi=45, disturbance=0):
+        self.ucs = ucs  
+        self.mi = mi
+        self.gsi = gsi
+        self.disturbance = disturbance
+        self.mb = mi * math.exp((gsi-100)/(28-14*disturbance))
+        self.s = math.exp((gsi-100)/(9-3*disturbance))
+        self.a = 1/2 + 1/6*(math.exp(-1*gsi/15)-math.exp(-20/3))
+    
+    # conversion method to calculate equivalent c and phi at given sigma_eff_3 (minor principle effective stress )  
+    def convertMC(self, sig_eff_3):
+        # normalised sig_3n
+        sig_3n = -sig_eff_3/self.ucs
+        
+        # unfactored cohesion, as a function of sig_3'
+        # in kPa
+        cohesion =  ( 
+                        self.ucs*((1 + 2*self.a)*self.s + (1 - self.a)*self.mb*sig_3n )*  
+                        ( self.s + self.mb*sig_3n)**(self.a-1) 
+                    ) / (   
+                        (1 + self.a)*(2 + self.a)*
+                        (math.sqrt(1 + (6*self.a*self.mb*(self.s + self.mb*sig_3n)**(self.a - 1))/((1 + self.a)*(2 + self.a)))) 
+        )
+        
+        # unfactored friction angle, as a function of sig_3'
+        # in degrees
+        phi = math.degrees(math.asin(
+                    ( 6*self.a*self.mb*(self.s + self.mb*sig_3n)**(self.a-1) 
+                    ) / ( 
+                        2*(1 + self.a)*(2 + self.a) + 6*self.a*self.mb*(self.s + self.mb*sig_3n)**(self.a-1) )
+            )
+        )
+        
+        return cohesion, phi
 
-mb = mi * math.exp((GSI-100)/(28-14*D))
-s = math.exp((GSI-100)/(9-3*D))
-a = 1/2 + 1/6*(math.exp(-1*GSI/15)-math.exp(-20/3))
+# function to apply partial factors to MC model parameters c' and phi'
+# apply partial factor to reduce c' and phi
+# default value = 1.0 (unfactored) 
+def factorMC(cohesion, phi, partial_factor=1.0):
+    # factor down cohesion
+    cohesion_factored = cohesion/partial_factor
+    
+    # factor down phi
+    tanphi = math.tan(math.radians(phi))
+    phi_factored = math.atan(tanphi)/partial_factor
+    return cohesion_factored, phi_factored
 
-# define boundary of interest
-x_min = -23
-x_max = 22
-y_min = 50
-y_max = 73
-x_inter = 1
-y_inter = 1
+# A rectangular region which acts as a lens to sample/manipulate/grid the data for contouring
+class SampleGrid():
+    def __init__(self,  x_min, x_max, x_inter,  
+                        y_min, y_max, y_inter):
+        
+        self.x_min = x_min
+        self.x_max = x_max
+        self.y_min = y_min
+        self.y_max = y_max
+        # spacing of sampling grids
+        self.x_inter = x_inter
+        self.y_inter = y_inter
+        self.x_range = np.arange(x_min, x_max, x_inter)
+        self.y_range = np.arange(y_min, y_max, y_inter)
+        # xx, yy, zz, same size np array with size of (len(x_range), len(y_range))
+        # zz is the array to store values for plotting
+        self.xx, self.yy, self.vv = self.griddata()
 
-# store extracted results in a dataframe
-x_range = np.arange(x_min, x_max, x_inter)
-y_range = np.arange(y_min, y_max, y_inter)
-xs, ys = np.meshgrid(x_range, y_range, sparse=True)
-xx, yy = np.meshgrid(x_range, y_range)
-sample = np.zeros_like(xx)
+    def griddata(self):
+        # xs, ys = np.meshgrid(x_range, y_range, sparse=True)
+        xx, yy = np.meshgrid(self.x_range, self.y_range)
+        vv = np.zeros_like(xx, dtype=float)  
+        return xx, yy, vv
 
-# specify the phases of interest to loop
-# Phase_2 - Stage3 EL1_84.3 - index number 2 in Phases[] 
-# Phase_8 - Stage5 EL2_82.3 - index number 4 in Phases[] 
-# Phase_5 - Stage7 EL3_75.4 - index number 6 in Phases[] 
-# Phase_7 - Stage9 ExcavationFL - index number 8 in Phases[]
-phases = [2,4,6,8]
-# create an empty list storing dataframe in each phase
-df_sig3 = []
-df_cohesion = []
-df_degree = []
+# A model interogation object which extract data from PLAXIS model
+# plx_phase is a Plx phase object
+class TargetModelPhase():
+    def __init__(self, g_o, plx_phase):
+        self.g_o = g_o
+        self.phase = plx_phase
+        self.phasename = plx_phase.Identification.value
 
-for p in phases:
-    # define a list that will store the extracted results
-    xysig3 = []
-    xycohesion = []
-    xydegree = []
-    # sample (x,y) point by looping through the boundary of interest
-    for x in range(x_min, x_max, x_inter):
-        for y in range(y_min, y_max, y_inter):
-            # interact with PLAXIS output to get result out of plaxis
-            sig_3 = g_o.getsingleresult(g_o.Phases[p], g_o.ResultTypes.Soil.SigmaEffective3, (x,y), True)
-            # convert to factored MOhr Coulomb parameters
-            sig_3n = -sig_3/UCS
-            degree = 0.8*math.asin((6*a*mb*(s+mb*sig_3n)**(a-1))/(2*(1+a)*(2+a)+6*a*mb*(s+mb*sig_3n)**(a-1)))*180/math.pi
-            cohesion = 0.8*(UCS*((1+2*a)*s+(1-a)*mb*sig_3n)*(s+mb*sig_3n)**(a-1))/((1+a)*(2+a)*(math.sqrt(1+(6*a*mb*(s+mb*sig_3n)**(a-1))/((1+a)*(2+a)))))
-            xysig3.append([x,y,sig_3])
-            xycohesion.append([x,y,cohesion])
-            xydegree.append([x,y,degree])
-    # populate sigma3, factored cohesion, factored degree in a reset df for each phase
-    df1 = pd.DataFrame(data = sample, index = ys[0:,0], columns = xs[0,0:])
-    df2 = pd.DataFrame(data = sample, index = ys[0:,0], columns = xs[0,0:])
-    df3 = pd.DataFrame(data = sample, index = ys[0:,0], columns = xs[0,0:])
-    for i in range(len(xysig3)):
-        df1.loc[xysig3[i][1], xysig3[i][0]] = xysig3[i][2]
-        df2.loc[xycohesion[i][1], xycohesion[i][0]] = xycohesion[i][2]
-        df3.loc[xydegree[i][1], xydegree[i][0]] = xydegree[i][2]
-    # reconstructure to show elevation in the dataframe
-    df1 = df1[::-1]
-    df2 = df2[::-1]
-    df3 = df3[::-1]    
-    df_sig3.append(df1)
-    df_cohesion.append(df2)
-    df_degree.append(df3)
+    # method to sample sigma3 in the model based on a given grid
+    # phase - phase to interact with
+    # varray - the numpy array size of (len(x_range), len(y_range)) to store sample values, to get sigma'_3 into varray
+    # x_range, y_range are range of position to sample the stress
+    def sample_sig3(self, phase, x_range, y_range, varray):
+        for j in range(len(x_range)):
+            for i in range(len(y_range)):
+                x = x_range[j]
+                y = y_range[i]
+                sig_3 = self.g_o.getsingleresult(phase, g_o.ResultTypes.Soil.SigmaEffective3, (x,y), True)
+                varray[i][j] = sig_3
+        return varray
 
-# present phase data stored in list    
-fig1, axs1 = plt.subplots(nrows=2,ncols=2, figsize=(16,9),sharex='col', sharey='row')
-(ax1, ax2), (ax3, ax4) = axs1
-fig2, axs2 = plt.subplots(nrows=2,ncols=2, figsize=(16,9),sharex='col', sharey='row')
-(ax5, ax6), (ax7, ax8) = axs2
-fig3, axs3 = plt.subplots(nrows=2,ncols=2, figsize=(16,9),sharex='col', sharey='row')
-(ax9, ax10), (ax11, ax12) = axs3
+# plotting function
+# arrange sub plot in 1 row 3 col: left to right, sig_3 --> c' --> phi'
+# vv0 - array of sigma_3 values
+# vv1 - array of c' values
+# vv2 - array of phi values
+# headertitle - main fig title (stage in plaxis)
+def contour_plot(xx, yy, vv0, vv1, vv2, headertitle):
+    fig, axs = plt.subplots(1,3, constrained_layout = True)
+    fig.suptitle(headertitle, fontsize=14)
+    
+    # colorbar legends parameters
+    # for sigma3'
+    cbar0_min = -540 
+    cbar0_max = 100 
+    cbar0_step = 40
+    # for cohesion
+    cbar1_min = 10 
+    cbar1_max = 58 
+    cbar1_step = 4
+    # for friction angle
+    cbar2_min = 14 
+    cbar2_max = 46 
+    cbar2_step = 1
 
-# define a font size
-ft = 12
+    levels0 = np.arange(cbar0_min, cbar0_max+cbar0_step, cbar0_step)
+    levels1 = np.arange(cbar1_min, cbar1_max+cbar1_step, cbar1_step)
+    levels2 = np.arange(cbar2_min, cbar2_max+cbar2_step, cbar2_step)
 
-# define colorbar range and scale interval
-# for stress
-cbar1_min = -540 
-cbar1_max = 100 
-cbar1_step = 40
-# for cohesion
-cbar2_min = 10 
-cbar2_max = 58 
-cbar2_step = 4
-# for friction angle
-cbar3_min = 14 
-cbar3_max = 46 
-cbar3_step = 1
-cbar3_step1 = 2
+    # plot1 -sigma3 plot
+    cs_0 = axs[0].contourf(xx, yy, vv0, levels0, cmap="rainbow")
+    axs[0].set_title("sig'_3")
+    axs[0].set_ylabel('Y (m)', fontsize = 12, weight = 'bold')
+    axs[0].set_xlabel('X (m)', fontsize = 12, weight = 'bold')
+    cbar0 = fig.colorbar(cs_0, ax=axs[0], ticks=levels0)
+    cbar0.ax.set_yticklabels(['{:.0f}'.format(lvl) for lvl in levels0], fontsize=12, weight = 'bold')
+    cbar0.ax.set_title('[kPa]', fontsize=12, weight="bold")
+    
+    # plot2 - c plot
+    cs_1 = axs[1].contourf(xx, yy, vv1, levels1, cmap="rainbow")
+    axs[1].set_title("cohesion")
+    axs[1].set_ylabel('Y (m)', fontsize = 12, weight = 'bold')
+    axs[1].set_xlabel('X (m)', fontsize = 12, weight = 'bold')
+    cbar1 = fig.colorbar(cs_1, ax=axs[1], ticks=levels1)
+    cbar1.ax.set_yticklabels(['{:.0f}'.format(lvl) for lvl in levels1], fontsize=12, weight = 'bold')
+    cbar1.ax.set_title('[kPa]', fontsize=12, weight="bold")
+    
+    # plot3 - phi' plot
+    cs_2 = axs[2].contourf(xx, yy, vv2, levels2, cmap="rainbow")
+    axs[2].set_title("friction angle")
+    axs[2].set_ylabel('Y (m)', fontsize = 12, weight = 'bold')
+    axs[2].set_xlabel('X (m)', fontsize = 12, weight = 'bold')
+    cbar2 = fig.colorbar(cs_2, ax=axs[2], ticks=levels2)
+    cbar2.ax.set_yticklabels(['{:.0f}'.format(lvl) for lvl in levels2], fontsize=12, weight = 'bold')
+    cbar2.ax.set_title('[deg]', fontsize=12, weight="bold")
 
-levels1 = np.arange(cbar1_min, cbar1_max+cbar1_step, cbar1_step)
-levels2 = np.arange(cbar2_min, cbar2_max+cbar2_step, cbar2_step)
-levels3 = np.arange(cbar3_min, cbar3_max+cbar3_step, cbar3_step)
-levels31 = np.arange(cbar3_min, cbar3_max+cbar3_step, cbar3_step1) # for colorbar legend only
+    # show plots
+    plt.show()
+    return plt
 
-# add subplots
-f1 = ax1.contourf(xx,yy[::-1],df_sig3[0], levels=levels1, cmap="rainbow")
-f2 = ax2.contourf(xx,yy[::-1],df_sig3[1], levels=levels1, cmap="rainbow")
-f3 = ax3.contourf(xx,yy[::-1],df_sig3[2], levels=levels1, cmap="rainbow")
-f4 = ax4.contourf(xx,yy[::-1],df_sig3[3], levels=levels1, cmap="rainbow")
+# main module to run the script
+def main():
+    
+    # initiate a HB model 
+    HBmod = HoekBrownModel(ucs=2000, mi=4, gsi=45, disturbance=0)
 
-f5 = ax5.contourf(xx,yy[::-1],df_cohesion[0], levels=levels2, cmap="rainbow")
-f6 = ax6.contourf(xx,yy[::-1],df_cohesion[1], levels=levels2, cmap="rainbow")
-f7 = ax7.contourf(xx,yy[::-1],df_cohesion[2], levels=levels2, cmap="rainbow")
-f8 = ax8.contourf(xx,yy[::-1],df_cohesion[3], levels=levels2, cmap="rainbow")
+    # initiate a sampling grid
+    sample_grid = SampleGrid(x_min=-23, 
+                            x_max=22,
+                            x_inter=1, 
+                            y_min=50,
+                            y_max=73,
+                            y_inter=1)
+    xarr = sample_grid.xx
+    yarr = sample_grid.yy
+    varr = sample_grid.vv
+    xrng = sample_grid.x_range
+    yrng = sample_grid.y_range
+    
+    # initiate a model data extraction
+    plx_phases = [g_o.Phase_8, g_o.Phase_7]
+    
+    for ph in plx_phases:
+        target_model_phase = TargetModelPhase(g_o, ph)
+        figtitle = target_model_phase.phasename
+        
+        # get sigma 3 from plaxis model
+        sig3_arr = target_model_phase.sample_sig3(ph, xrng, yrng, varr)
+        
+        # get cohesion converted from HB model
+        # get phi converted from HB model
+        c_arr = np.zeros_like(sig3_arr, dtype=float)
+        phi_arr = np.zeros_like(sig3_arr, dtype=float)
+        for i in range(sig3_arr.shape[0]):
+            for j in range(sig3_arr.shape[1]):
+                c_arr[i][j], phi_arr[i][j] = HBmod.convertMC(sig3_arr[i][j])
+        
+        # do plot per phase
+        cplot = contour_plot(xarr, yarr, vv0=sig3_arr, vv1=c_arr, vv2=phi_arr, headertitle=figtitle)
+        savepath = input('Save to folder:')
+        # cplot.savefig(savepath + "\\" + str(ph.Name) + ".png" )
 
-f9 = ax9.contourf(xx,yy[::-1],df_degree[0], levels=levels3, cmap="rainbow")
-f10 = ax10.contourf(xx,yy[::-1],df_degree[1], levels=levels3, cmap="rainbow")
-f11 = ax11.contourf(xx,yy[::-1],df_degree[2], levels=levels3, cmap="rainbow")
-f12 = ax12.contourf(xx,yy[::-1],df_degree[3], levels=levels3, cmap="rainbow")
-
-# show subplot titles indicating stages
-ax1.set_title('Phase_2: Stage3 EL1_84.3', fontsize = ft)
-ax1.set_ylabel('Elevation (m)', fontsize = ft, weight = 'bold')
-ax1.tick_params(labelsize = ft)
-ax2.set_title('Phase_8: Stage5 EL2_82.3', fontsize = ft)
-ax3.set_title('Phase_5: Stage7 EL3_75.4', fontsize = ft)
-ax3.set_ylabel('Elevation (m)', fontsize = ft, weight = 'bold')
-ax3.set_xlabel('X (m)', fontsize = ft, weight = 'bold')
-ax3.tick_params(labelsize = ft)
-ax4.set_title('Phase_7: Stage9 ExcavationFL', fontsize = ft)
-ax4.set_xlabel('X (m)', fontsize = ft, weight = 'bold')
-ax4.tick_params(labelsize = ft)
-
-ax5.set_title('Phase_2: Stage3 EL1_84.3', fontsize = ft)
-ax5.set_ylabel('Elevation (m)', fontsize = ft, weight = 'bold')
-ax5.tick_params(labelsize = ft)
-ax6.set_title('Phase_8: Stage5 EL2_82.3', fontsize = ft)
-ax7.set_title('Phase_5: Stage7 EL3_75.4', fontsize = ft)
-ax7.set_ylabel('Elevation (m)', fontsize = ft, weight = 'bold')
-ax7.set_xlabel('X (m)', fontsize = ft, weight = 'bold')
-ax7.tick_params(labelsize = ft)
-ax8.set_title('Phase_7: Stage9 ExcavationFL', fontsize = ft)
-ax8.set_xlabel('X (m)', fontsize = ft, weight = 'bold')
-ax8.tick_params(labelsize = ft)
-
-ax9.set_title('Phase_2: Stage3 EL1_84.3', fontsize = ft)
-ax9.set_ylabel('Elevation (m)', fontsize = ft, weight = 'bold')
-ax9.tick_params(labelsize = ft)
-ax10.set_title('Phase_8: Stage5 EL2_82.3', fontsize = ft)
-ax11.set_title('Phase_5: Stage7 EL3_75.4', fontsize = ft)
-ax11.set_ylabel('Elevation (m)', fontsize = ft, weight = 'bold')
-ax11.set_xlabel('X (m)', fontsize = ft, weight = 'bold')
-ax11.tick_params(labelsize = ft)
-ax12.set_title('Phase_7: Stage9 ExcavationFL', fontsize = ft)
-ax12.set_xlabel('X (m)', fontsize = ft, weight = 'bold')
-ax12.tick_params(labelsize = ft)
-
-# show legend
-cbar1 = fig1.colorbar(f1, ax=axs1.ravel().tolist(), ticks=levels1)
-cbar1.ax.set_yticklabels(['{:.0f}'.format(x) for x in levels1], fontsize = ft, weight = 'bold')
-cbar1.ax.set_title('[kPa]', fontsize = ft, weight="bold")
-
-cbar2 = fig2.colorbar(f5, ax=axs2.ravel().tolist(), ticks=levels2)
-cbar2.ax.set_yticklabels(['{:.0f}'.format(x) for x in levels2], fontsize = ft, weight = 'bold')
-cbar2.ax.set_title('[kPa]', fontsize = ft, weight="bold")
-
-cbar3 = fig3.colorbar(f9, ax=axs3.ravel().tolist(), ticks=levels31)
-cbar3.ax.set_yticklabels(['{:.0f}'.format(x) for x in levels31], fontsize = ft, weight = 'bold')
-cbar3.ax.set_title('[degree]', fontsize = ft, weight="bold")
-
-# shared properties for subplots
-fig1.suptitle('Effective Sigma_3 for MMG I/II during Excavation', fontsize = ft, weight = 'bold')
-fig2.suptitle('Converted Factored Cohesion for MMG I/II during Excavation (Factor: 1.25)', fontsize = ft, weight = 'bold')
-fig3.suptitle('Converted Factored Friction Angle for MMG I/II during Excavation (Factor: 1.25)', fontsize = ft, weight = 'bold')
-
-# show contour plot
-plt.show()
+main()
