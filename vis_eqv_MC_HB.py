@@ -25,12 +25,12 @@ class HoekBrownModel():
         self.s = math.exp((gsi-100)/(9-3*disturbance))
         self.a = 1/2 + 1/6*(math.exp(-1*gsi/15)-math.exp(-20/3))
     
-    # conversion method to calculate equivalent c and phi at given sigma_eff_3 (minor principle effective stress )  
+    # conversion method to calculate equivalent c and phi at given sigma_eff_3 (minor principal effective stress)  
     def convertMC(self, sig_eff_3):
         # normalised sig_3n
         sig_3n = -sig_eff_3/self.ucs
         
-        # unfactored cohesion, as a function of sig_3'
+        # unfactored cohesion, as a function of sigma_eff_3
         # in kPa
         cohesion =  ( 
                         self.ucs*((1 + 2*self.a)*self.s + (1 - self.a)*self.mb*sig_3n )*  
@@ -155,7 +155,7 @@ def factorMC(cohesion, phi, partial_factor=1.0):
     phi_factored = math.atan(tanphi)/partial_factor
     return cohesion_factored, phi_factored
 
-# funtion to nearest integer by user definition
+# function to nearest integer by user definition
 def round_to_base(value, base:int):
     return int(value) - int(value) % int(base)
 
