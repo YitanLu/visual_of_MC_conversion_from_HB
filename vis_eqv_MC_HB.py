@@ -14,7 +14,7 @@ s_o, g_o = new_server('localhost', server_port, password=server_password)
 # MMG I/II Hoek-Brown parameters
 # USC, mi, GSI, D are the primary input parameters
 # mb, s, a are derivative parameters
-# USC or qi in the unit of kPa
+# USC or qi in the unit of [kPa]
 class HoekBrownModel():
     def __init__(self, ucs=2000, mi=4, gsi=45, disturbance=0):
         self.ucs = ucs  
@@ -31,7 +31,7 @@ class HoekBrownModel():
         sig_3n = -sig_eff_3/self.ucs
         
         # unfactored cohesion, as a function of sigma_eff_3
-        # in kPa
+        # in [kPa]
         cohesion =  ( 
                         self.ucs*((1 + 2*self.a)*self.s + (1 - self.a)*self.mb*sig_3n )*  
                         ( self.s + self.mb*sig_3n)**(self.a-1) 
@@ -41,7 +41,7 @@ class HoekBrownModel():
         )
         
         # unfactored friction angle, as a function of sig_3'
-        # in degrees
+        # in [degrees]
         phi = math.degrees(math.asin(
                     ( 6*self.a*self.mb*(self.s + self.mb*sig_3n)**(self.a-1) 
                     ) / ( 
@@ -146,17 +146,21 @@ class ContourByStage():
 # function to apply partial factors to MC model parameters c' and phi'
 # apply partial factor to reduce c' and phi
 # default value = 1.0 (unfactored) 
+# return factored cohesion in [kPa]
+# return factored phi' in [degree]
 def factorMC(cohesion, phi, partial_factor=1.0):
     # factor down cohesion
     cohesion_factored = cohesion/partial_factor
     
     # factor down phi
     tanphi = math.tan(math.radians(phi))
-    phi_factored = math.atan(tanphi)/partial_factor
+    phi_factored = math.degrees(
+                                math.atan(tanphi)/partial_factor)
+
     return cohesion_factored, phi_factored
 
-# function to nearest integer by user definition
-def round_to_base(value, base:int):
+# function to return nearest integer by user definition
+def round_to_base(value, base:int) -> int:
     return int(value) - int(value) % int(base)
 
 # main module to run the script
@@ -197,7 +201,7 @@ def main():
             for j in range(sig3_arr.shape[1]):
                 c_arr[i][j], phi_arr[i][j] = HBmod.convertMC(sig3_arr[i][j])
         
-        # do plot per phase by initiate CoutourByStage boject
+        # do plot per phase by initiating CoutourByStage object
         cplot = ContourByStage(xarr, yarr, vv_list=[sig3_arr, c_arr, phi_arr], headertitle=figtitle, ftsize=12)
         current_chart = cplot.contour_plot()
         
@@ -211,13 +215,13 @@ def main():
                         cbar_step=50)
         # generate cohesion sub plot
         cplot.sub_plots(next(plt_num), 
-                        cbar_min=round_to_base(math.floor(c_arr.min()), base=5), 
-                        cbar_max=round_to_base(math.ceil(c_arr.max()), base=5), 
+                        cbar_min=round_to_base(math.floor(np.nanmin(c_arr)), base=5), 
+                        cbar_max=round_to_base(math.ceil(np.nanmax(c_arr)), base=5), 
                         cbar_step=5)
         # generate phi sub plot
         cplot.sub_plots(next(plt_num), 
-                        cbar_min=math.floor(phi_arr.min(), base=1), 
-                        cbar_max=math.ceil(phi_arr.max(), base=1), 
+                        cbar_min=math.floor(np.nanmin(phi_arr)), 
+                        cbar_max=math.ceil(np.nanmax(phi_arr)), 
                         cbar_step=1)
 
         current_chart.show()
